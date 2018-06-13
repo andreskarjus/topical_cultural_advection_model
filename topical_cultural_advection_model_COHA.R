@@ -10,9 +10,17 @@
 install.packages(c("compiler", "parallel", "text2vec", "fastmatch", "grr", "Matrix", "Rmisc"))
 # note: text2vec is in beta as of writing this; the following code will work with version 0.5.0, no guarantees for later versions.
 #
-# If you do not have access to COHA or prefer not to use R, feel free to explore the results using the pre-computed matrices based on COHA data, distributed as part of this repo (coha_advection.zip), which contains the matrix of log frequency changes and the matrix of advection values (using the default parameters specified here, i.e. including only nouns that occur >100 times in at least one of the (smoothed/concatenated) periods), and the list of historic advection values of new nouns from 1970-2009 across 10 decades preceding first occurrence of each noun.
+# If you do not have access to COHA or prefer not to use R, feel free 
+# to explore the results using the pre-computed matrices based on COHA data, 
+# distributed as part of this repo (coha_advection.zip), which contains 
+# the matrix of log frequency changes and the matrix of advection values 
+# (using the default parameters specified here, i.e. including only nouns 
+# that occur >100 times in at least one of the (smoothed/concatenated) periods), 
+# and the list of historic advection values of new nouns from 1970-2009 across 
+# 10 decades preceding first occurrence of each noun.
 #
-# See the paper for more details: Karjus, Blythe, Kirby, Smith 2018: Quantifying the dynamics of topical fluctuations in language, https://arxiv.org/abs/1806.00699
+# See the paper for more details: 
+# Karjus, Blythe, Kirby, Smith 2018: Quantifying the dynamics of topical fluctuations in language, https://arxiv.org/abs/1806.00699
 # Also see how to apply this model to various culture datasets: https://andreskarjus.github.io/cultevol_tartu_slides, code here: https://github.com/andreskarjus/cultural_advection_TartuCE
 
 
@@ -21,8 +29,9 @@ install.packages(c("compiler", "parallel", "text2vec", "fastmatch", "grr", "Matr
 ####### Important:
 #
 FOLDER = getwd() # use default working dir OR define a folder where to put the temporary processing files
-# Regardless, make sure to put the advection_functions.R file into wherever FOLDER is so it can be sourced. If you did not change the line above, then it is whatever the working directory is, which is:
-getwd()
+# Regardless, make sure to put the advection_functions.R file into wherever FOLDER is so it can be sourced. 
+# If you did not change the line above, then it is whatever the working directory is, which is:
+print(getwd())
 
 
 COHAFOLDER = "COHA/wlp" # define the *full* path to the COHA distribution's wlp folder that contains the decade folders, which in turn contain the POS-tagged text files (3 columns, word-lemma-pos). Note that the same functions can also be used to parse COCA (but note the different folder structure and specify the paths accordingly).
@@ -54,21 +63,25 @@ nfree=0
 
 #### COHA, default decade bins, 20 of them: 1810s-2000s; nouns only, t-1 smoothing ####
 #
-# creates some folders to store the intermediate steps:
+# creates some folders to store the intermediate steps (as RData files):
 dir.create(FOLDER) # will fail with a warning if already present
-sapply(c("cohaperiods", "cohaperiodrelevants", "cohaperiodtcm"), function(x) dir.create(file.path(FOLDER, x)))
+sapply(c("periods",          # parsed COHA files (lists, each element (a character vector) is a doc
+         "periodtcm",        # sparse term co-occrrence matrices for each period/decade from the above
+         "periodrelevants"   # lists of topic vectors based on the tcm's
+         ), 
+       function(x) dir.create(file.path(FOLDER, x)))
 source(file.path(FOLDER, "advection_functions.R"))  # load functions; if this fails put the R script in the FOLDER folder
 
 
 # This parses the entire corpus and stores the data as lists within RData files in a specified folder. This needs to be run only once, unless different parsing behaviour is desired.
 coha_parallel(theperiods= theperiods, path=COHAFOLDER, nfree=nfree, markS = markS, removenp = removenp, rmstopwords = T, FOLDER=FOLDER) 
-countmat = dotrends(foldr = file.path(FOLDER, "cohaperiods"), mint=2, nfree=0)
+countmat = dotrends(foldr = file.path(FOLDER, "periods"), mint=2, nfree=0)
 
-# These calls below use the parsed data (above) to construct the PPMI-based topic vectors and calculate advection. These make use of the parsed files stored in cohaperiods folder.
-perioddatas(rdats = list.files(file.path(FOLDER, "cohaperiods"), full.names = T), 
-            comlex=NA, minc=minraw, tcmwindow = tcmwindow, relevancy_threshold=relevancy_threshold, nfree=nfree, wordclassesr=wordclassesr, interpol=topicsmoothing, tcmfolder=file.path(FOLDER,"cohaperiodtcm/"), relefolder=file.path(FOLDER,"cohaperiodrelevants/"))
+# These calls below use the parsed data (above) to construct the PPMI-based topic vectors and calculate advection. These make use of the parsed files stored in periods folder.
+perioddatas(rdats = list.files(file.path(FOLDER, "periods"), full.names = T), 
+            comlex=NA, minc=minraw, tcmwindow = tcmwindow, relevancy_threshold=relevancy_threshold, nfree=nfree, wordclassesr=wordclassesr, interpol=topicsmoothing, tcmfolder=file.path(FOLDER,"periodtcm/"), relefolder=file.path(FOLDER,"periodrelevants/"))
 
-allrelevants = aggregaterelevants(file.path(FOLDER, "cohaperiodrelevants"))
+allrelevants = aggregaterelevants(file.path(FOLDER, "periodrelevants"))
 freqdifmat1 = dofreqdif(countmat[[1]], smooth=1, rownames(countmat[[1]])) 
 
 # advection calculation:
@@ -89,7 +102,7 @@ mtext("log frequency change", 1, outer = F,line=2,cex=m); mtext("advection (log 
 
 #### COHA, model for evaluating advection for lexical innovations in 1970s-2000s ####
 #
-# Assumes cohaperiods folder is populated with the parsed COHA files; if not, run the coha_parallel() command above.
+# Assumes periods folder is populated with the parsed COHA files; if not, run the coha_parallel() command above.
 # Then run the following:
 #
 # will load or create the counts matrix if needed:
@@ -97,13 +110,13 @@ if(exists("countmat")){
   "countmat in workspace"
 } else { if(file.exists(file.path(FOLDER, "countmat.RData"))){
   load(file.path(FOLDER, "countmat.RData"))
-} else { countmat = dotrends(foldr = file.path(FOLDER, "cohaperiods"), mint=2, nfree=0)  
+} else { countmat = dotrends(foldr = file.path(FOLDER, "periods"), mint=2, nfree=0)  
 } 
 }
 
-dir.create(file.path(FOLDER,"cohaperiodtcmnews")); dir.create(file.path(FOLDER,"relevantsnews"))
-perioddatas(rdats = list.files(file.path(FOLDER, "cohaperiods"), full.names = T)[17:20], 
-            comlex=NA, minc=minraw, tcmwindow = tcmwindow, relevancy_threshold=relevancy_threshold, nfree=nfree, wordclassesr=wordclassesr, interpol=c(-3,-2,-1, 0), tcmfolder=file.path(FOLDER,"cohaperiodtcmnews/"), relefolder=file.path(FOLDER,"relevantsnews/"),yearnames=seq(1970,2000,10))
+dir.create(file.path(FOLDER,"periodtcmnews")); dir.create(file.path(FOLDER,"relevantsnews"))
+perioddatas(rdats = list.files(file.path(FOLDER, "periods"), full.names = T)[17:20], 
+            comlex=NA, minc=minraw, tcmwindow = tcmwindow, relevancy_threshold=relevancy_threshold, nfree=nfree, wordclassesr=wordclassesr, interpol=c(-3,-2,-1, 0), tcmfolder=file.path(FOLDER,"periodtcmnews/"), relefolder=file.path(FOLDER,"relevantsnews/"),yearnames=seq(1970,2000,10))
 
 newsrelevants = aggregaterelevants(file.path(FOLDER, "relevantsnews"), pattern="2000.RData") # need only the last one (that smoothes over previous periods)
 
@@ -152,10 +165,10 @@ mtext("decades",1, outer = T, line=-1,cex=0.8); mtext(2, text = "permillion freq
 
 #### Calculate advection using topics from an LDA model instead ####
 
-# Assumes cohaperiods folder is populated with the parsed COHA files; if not, run the coha_parallel() command above.
+# Assumes periods folder is populated with the parsed COHA files; if not, run the coha_parallel() command above.
 # The following example calculates the advection values for period 20 (the 2000s), using t-1 smoothing, k=500 latent topics.
 lda_advection_20 = doLDAperiod(nperiod=20, 
-                               rdats = list.files(file.path(FOLDER, "cohaperiods")), 
+                               rdats = list.files(file.path(FOLDER, "periods")), 
                                interpol=c(-1,0), minc=100,
                                topicsperword=F, topics=500, 
                                a=0.1, b=0.1, n_iter=5000, 

@@ -130,7 +130,7 @@ fixcohaperiod = function(period1,
   if(!byyear){
     subperiod = paste0(ifelse(saveyear, gsub("[^0-9]","", period1), period1),".RData") # year from foldername
   }
-  tryCatch({save(period, file=file.path(FOLDER, "cohaperiods", subperiod ))}, error=function(e) e )
+  tryCatch({save(period, file=file.path(FOLDER, "periods", subperiod ))}, error=function(e) e )
   print(Sys.time())
   #return(period)   #  parallel, just saves
 }
@@ -384,7 +384,7 @@ aggregaterelevants = function(foldr, pattern = NULL){
 }
 
 # tcm+ppmi calculations
-perioddatas = function(rdats = list.files(file.path(FOLDER,"cohaperiods"), full.names = T), comlex, minc, tcmwindow, windowweights="weighted", relevancy_threshold, nfree=0,wordclassesr="", tcmfolder=file.path(FOLDER,"cohaperiodtcm/"),relefolder=file.path(FOLDER,"cohaperiodrelevants/"), interpol=0, yearnames=seq(1810,2000,10)){
+perioddatas = function(rdats = list.files(file.path(FOLDER,"periods"), full.names = T), comlex, minc, tcmwindow, windowweights="weighted", relevancy_threshold, nfree=0,wordclassesr="", tcmfolder=file.path(FOLDER,"periodtcm/"),relefolder=file.path(FOLDER,"periodrelevants/"), interpol=0, yearnames=seq(1810,2000,10)){
   library(parallel)
   nc = detectCores() - nfree
   print(c(paste(Sys.time(), "start tcm phase")))
