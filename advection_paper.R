@@ -14,7 +14,8 @@
 MINCOUNT = 100            # min frequency to include word
 WINSIZE = 10              # ppmi model context window size
 RELEVANCY_THRESHOLD = 75  # how many context words to include in advection model
-SCRIPTS_PATH              # full path to the "advection_functions.R" script file
+SCRIPTS_PATH  = "advection_functions.R" # full path to the "advection_functions.R" script file
+FREE_CORES = 0            # how many cpu cores to keep free when parallel-processing; change this to N-1 (where N is the number of cores), if you have small amounts of RAM (e.g. <4GB when parsing corpus; <16GB when running LDA)
 
 # 2. Define the following paths and create folders:
 COHAPATH = "/COHA/wlp"         # path to the COHA distribution wlp folder
@@ -34,7 +35,7 @@ source(SCRIPTS_PATH)
 
 # Parse and save corpus files, return (and also save) counts matrix
 countmat = docorpus_parallel(theperiods=list.files(COHAPATH) , # decade folders
-                  nfree=0, 
+                  nfree=FREE_CORES,       # use all cpu cores for parallel
                   markS = list(N=T, V=F,A=F,D=F,M=F,P=F), # optional: POS class to prefix with a tag
                   minlen=3,      # min word length (exclude short ones) 
                   path=COHAPATH, 
@@ -60,8 +61,8 @@ advection1 = do_advections(WINSIZE, MINCOUNT, ppmi=T, RELEVANCY_THRESHOLD, smoot
 
 # LDA-based model, without and with "smoothing"
 
-advection_lda0 = ldatester(foldr=file.path(FOLDER, PERIODFOLDER), smooth=c(-0), topics=500, minc=100,  freqdif=freqdifmat, nfree=3, periodsx = 2:ncol(freqdifmat), pos="^N:")
-advection_lda1 = ldatester(foldr=file.path(FOLDER, PERIODFOLDER), smooth=c(-1, 0), topics=500, minc=100,  freqdif=freqdifmat, nfree=3, periodsx = 2:ncol(freqdifmat),pos="^N:")
+advection_lda0 = ldatester(foldr=file.path(FOLDER, PERIODFOLDER), smooth=c(0), topics=500, minc=100,  freqdif=freqdifmat, nfree=FREE_CORES, periodsx = 2:ncol(freqdifmat), pos="^N:")
+advection_lda1 = ldatester(foldr=file.path(FOLDER, PERIODFOLDER), smooth=c(-1, 0), topics=500, minc=100,  freqdif=freqdifmat, nfree=FREE_CORES, periodsx = 2:ncol(freqdifmat),pos="^N:")
 
 
 #### numbers for paper ####
