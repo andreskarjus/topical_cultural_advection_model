@@ -1,103 +1,178 @@
-#### Functions to calculate topical-cultural advection ####
-# Includes some COHA-specific functions for basic corpus cleaning
-# And also some extras like evaluating the role of advection in lexical innovation, 
-# and using an alternative LDA based approach.
-#
-# Andres Karjus, University of Edinburgh
-#
+# Functions for the calculating topical advection
+# Andres Karjus
 
 
-#### functions ####
 
-# coha_parallel >calls> fixcohaperiod >calls> coca_csv
-coca_csv = function(filepath, minlen=3, 
-                    markS = list(S=T,V=F,A=F,D=F,M=F,P=F),
-                    rmstopwords=T, removenp=T,
-                    stopgrep = "^ge|^a|^c|^d|^ex$|^i|^r[egpa]|^rrq|^mc|^to$|^xx$|^z|^y$|null|\"|^nnu|^np[12]*|\\.\\.\\.|^p|^v[^v]"   # stopwords by POS
+print(rbind("Package"="status:",cbind(ifelse(!sapply(p<-c("magrittr", "text2vec", "compiler", "grr", "parallel", "Matrix", "fastmatch", "Rmisc", "xtable", "RColorBrewer","entropy", "beeswarm"), function(x) require(x, character.only = T)), "missing, please install!", "loaded"))), quote=F)
+
+
+coha_csv = function(filepath, minlen=3, 
+                    markS=F,rmstopwords=T,removenp,
+                    stopliteral=T,
+                    fixnums = T,
+                    fixhyphens = T,
+                    docborders= "^##[0-9]|@@[0-9]|^@|<p>",
+                    untouchables = NULL
+                    
 ){
+  # docborders:
+  # ##=coca, @@=coha  
+  # |^@$ = censorship holes, leave out to not split docs. But bad if need to filter single-document words
+  # <p> paragraph tag appears in more recent coha, might as well make use of it.
+  # if left in, should be filtered by minlen and/or stopwords
+  # coca spoken: @!xxx speaker tags; now @ counts; if not: their 2nd column (lemma) is zero-lenght, minlen would filter out
+  
+  
+  # define grep to match stopword pos tags:
+  stopgrep = "^ge|^a|^c|^d|^ex$|^i|^r[egpa]|^rrq|^mc|^to|^xx|^z|^y|null|\"|^nnu|np|\\.\\.\\.|!|^p|^v[^v]|^u"
+  # Note: all others rely on the primary tag, except for NP proper noun which is matched is subsequent
+  # tags as well (in case of multitag like nn1_np1), since it's such a common error in coha.
+  # Note that the tag for some punctuation is the actual punctuation itself: ! ...
+  
+  # define list of additional stopwords - in case they escape the pos filter (e.g. the weird hyphenated ones that will have hyphens filtered down the line) and the max length filter (current default 3)
+  stopliterals = unique( c("about","above","after","again","against","because","been","before","being","below","between","both","could","does","doing","down","each","from","further","have","having","he'd","he'll","he's","here","here's","hers","how's","i'll","i've","into","it's","let's","more","most","once","only","other","ought","ours","over","same","she'd","she'll","she's","should","some","such","than","that","that's","their","theirs","them","then","there","there's","these","they","they'd","they'll","they're","they've","this","those","through","under","until","very","we'd","we'll","we're","we've","were","what","what's","when","when's","where","where's","which","while","who's","whom","why's","with","would","you'd","you'll","you're","you've","your","yours","don't","ain't","can't","the", "but", 
+  "be", "is", "was", "we", "me", "his", "her", "you", "our", "us", "my", "she", "he", "they", "or", "of", "to", "are", "has","all", "and", "did", "it", "for", "any", "who", "so", "do","by", "thi", "go", "got", "get", "also", "maybe", "no", "yes", "if", "how", "as", "at", "didn't") )
+   
+  
   # for compatability with earlier run-scripts, add missing prefix parameters
-  fixmarks = setdiff( c("S","V","A","D","M","P", "X", "G"), names(markS))
+  fixmarks = setdiff( c("N","V","A","D","M","P"), names(markS))
   if(length(fixmarks)>0){
     tmp = as.list(rep(F, length(fixmarks))); names(tmp) = fixmarks
     markS = c(markS, tmp)
   }
   
+  ## load data
   words = read.csv(filepath, sep="\t", quote="", header=F, skipNul=T, 
                    stringsAsFactors=F, fileEncoding="latin1")
   #print(head(words))
-  words[ grep("^(##[0-9]|@@[0-9])", words[,1]), 2] = "<doc>" # #=coca, @=coha  
-
-  stopwords=NULL;nps=NULL;badocr=NULL
+  doctags = grep(docborders, words[,1])
+  words[doctags, 2] = "<doc>" 
+  words[doctags, 3] = "<doc>"  # to avoid filters on borders (some tagged as mc for some reason in corpus)
+  # NB: COHA lemma column is always lowercase!
+  
+  
+  stopwords=NULL; stopwords2=NULL; nps=NULL;badocr=NULL
   if(rmstopwords){
     # "^ge|^a|^c|^d|^ex$|^i|^r[egpa]|^rrq|^mc|^to$|^xx$|^z|^y$|null|\"|^nnu|\\.\\.\\.|^p|^v[^v]"
     # "^ge|^a|^c|^d|^ex$|^i|^r[egpa]|^rrq|^mc|^to$|^xx$|^z|^y$|null|\"|^nnu|^np[12]*|\\.\\.\\.|^p|^v[^v]" # current, np as stopwords
     stopwords = grep(stopgrep, words[,3]) 
+    # coha <p> tag is null, " tag is actual ", ! tag is !
+    # ... tag is ...
+    # nnu is units of measurement eg $1000 but sometimes lemma field empty
+    # fo is formula, mostly bad ocr eg &+++ BUT ALSO doc borders, which are neede
+    # z is -- dash, zz is letters
+    # u = interjection
   }
   
   if(removenp){
-    nps = grep("^[A-Z]", words[,1])   # all capitalized is np, hard filter.--------------
+    #nps = grep("^np", words[,3]) # also under stopwords
+    nps = grep("^[A-Z]", words[,1])   # all capitalized considered np, hard filter.----
   }
   
   shorts = which(nchar(words[,2]) < minlen) #
   
-  # remove some known mistagged ocr errors and other unwanted bits and pieces:
-  badocr = grep("doesn$|weren$|couldn$|shouldn$|isn$|wouldn$|aren$|hadn$|wasn$|hasn$|didn$|befor$|^dieir|^diat|^diose|^diis|^diere|^diese|^dius|--|\\+|[%;©®™@.*/#=$]|-$|^-|^p[0-9]+", words[,2])
+  badocr = grep(
+    "^doesn|weren[t]*$|^could[nta]*$|^should[nta]*$|^isn[t]*$|^would[nta]*$|^aren[t]*$|^hadn[t]*$|^wasn[t]*$|^hasn[t]*$|^didn[t]*$|^befor$|^dieir|^diat|^diose|^diis|^diere|^diese|^dius|\\+|[%;©®™@.*/#=$]|^p[0-9]+|^[^a-z]*$|^[01][a-z]+|^[[:punct:]]|[[:punct:]]$", 
+    words[,2])
+  # ^- -$ --  broken compounds, but maybe still keep? especially now if removing hyphens
+  #  ---- , &+++++ ; p[0-9]+ are page numbers
+  # doesn weren aren  ->  't short forms! but sometimes tagged as nouns...
+  # ^[^a-z]*$ - to catch if no (English) letters present but still tagged as content word class
+  # ^[0-9][a-z]+ - mostly bad ocr, single number instead of capital (O -> 0)
+  # remove words starting with "-" (or any punctuation), mostly broken hypenation (eg gets "ing" as word)
+  # new, for COCA: remove words ending with .!? (unsegmented punctuation)
   
+  alldocs = words[,2]  # keep only lemmas after this
+  ## add POS prefixes is applicable
+  # (need to do this before removing stopwords and such so indices match)
   
-  toremove = union( c(stopwords,nps, shorts, badocr), NULL) # remove all these
-  if(length(toremove) > 0){
-    words = words[-toremove, ]
+  # match for the literal stopwords once before adding tags
+  if(stopliteral){
+    stopwords21 = which(alldocs %fin% stopliterals) # fastmatch
   }
   
-  alldocs = words[,2]
-  
   if(any(unlist(markS))){
-    
-    if(markS$S){
-      ispos = grep("^nn[^u]*", words[,3])
-      alldocs[ispos] = paste("S:", alldocs[ispos], sep="")
+    # problem in coha/coca: double tags ( _ ) and @-signs...!
+    if(markS$N){
+      ispos = grep("^nn([^u]|$)", words[,3])
+      alldocs[ispos] = paste0("N:", alldocs[ispos])
     }
     if(markS$V){
       ispos = grep("^vv", words[,3])
-      alldocs[ispos] = paste("V:", alldocs[ispos], sep="")
+      alldocs[ispos] = paste0("V:", alldocs[ispos])
     }
     if(markS$A){
-      ispos = grep("^jj[rt]*$", words[,3])
-      alldocs[ispos] = paste("A:", alldocs[ispos], sep="")
+      ispos = grep("^j", words[,3])
+      alldocs[ispos] = paste0("A:", alldocs[ispos])
     }
     if(markS$D){
       ispos = grep("^d", words[,3])
-      alldocs[ispos] = paste("D:", alldocs[ispos], sep="")
+      alldocs[ispos] = paste0("D:", alldocs[ispos])
     }
     if(markS$M){
       ispos = grep("^mc([^gm]|$)", words[,3])
-      alldocs[ispos] = paste("M:", alldocs[ispos], sep="")
+      alldocs[ispos] = paste0("M:", alldocs[ispos])
     }
-    if(markS$P){  # proper nouns
+    if(markS$P){  # proper nouns   # see stopwords above
       ispos = grep("^np", words[,3])
-      alldocs[ispos] = paste("P:", alldocs[ispos], sep="")
+      alldocs[ispos] = paste0("P:", alldocs[ispos])
     }
-    if(markS$X){  # shall, got etc
-      ispos = grep("^vvx$", words[,3])
-      alldocs[ispos] = paste("X:", alldocs[ispos], sep="")
-    }
-    
   }
+  rm(words) # no need for the full csv anymore, just lemmas
+  
+  ### only these following two modify the actual words:
+  # fix hyphens and nums here before removing, to be able to do newwords-filtering
+  # note: this currently allows some actually <minlen words to sneak in
+  if(fixhyphens){
+    alldocs = gsub("-", "", alldocs)
+  }
+  if(fixnums){  # replace all numbers with generic 000; numbers separated by ., considered single number
+    alldocs = gsub("[0-9]+[0-9.,]*", "000", alldocs)
+  } # importantly, numbers like 000-000 becomes one single 000 if hyphens are removed too
+  ###
+  
+  
+  # match for the literal stopwords here once more (now that the hyphens are gone)
+  if(stopliteral){
+    stopwords22 = which(alldocs %fin% stopliterals) # fastmatch
+  }
+  
+  # don't touch targets (likely mistagged if on the remove list)
+  # and don't touch doc tags!
+  # if targets have tags - tags were already applied to current data above
+  if(is.null(untouchables)){
+    dontremove=doctags
+  } else {
+    dontremove = unique( c(doctags,          # shouldn't need unique but anyway
+                           which(alldocs %fin% untouchables) ) )  # fastmatch
+  }
+  
+  # concatenate remove indices
+  toremove = setdiff( c(stopwords, stopwords21, stopwords22, nps, shorts, badocr ), 
+                      dontremove) 
+  # but keep if on the list
+  if(length(toremove) > 0){
+    alldocs = alldocs[ -toremove ]
+  }
+  
   return(alldocs)
 }
-library(compiler)
-coca_csv = cmpfun(coca_csv, options=list(optimize=3))
 
 
 
+# docorpus_parallel > fixcohaperiod > coha_csv
 fixcohaperiod = function(period1, 
-                         path="",
+                         path,
                          minlen=3, 
-                         markS = list(S=F,V=F,A=F,D=F,M=F,P=F), 
-                         rmstopwords, removenp, saveyear=T, byyear, FOLDER
+                         markS, rmstopwords, removenp, saveyear=T, byyear,
+                         onlyvocab=F,
+                         untouchables,
+                         FOLDER,periodfolder
 ){
   gc()
   print(paste(Sys.time(), period1))
+  #Magazine/wlp_mag_1996.txt
+  
   if(byyear){
     pfiles = file.path(path,period1) # vector of filenames with path from main folder
   }
@@ -109,8 +184,9 @@ fixcohaperiod = function(period1,
   for(y in pfiles){
     #print(y)
     tryCatch({
-      filepath = y 
-      alldocs = coca_csv(filepath, minlen=minlen, markS = markS, rmstopwords=rmstopwords, removenp=removenp) 
+      filepath = y #paste0(path, period1,"/", y) # now uses fullnames that has path
+      
+      alldocs = coha_csv(filepath, minlen=minlen, markS = markS, rmstopwords=rmstopwords, removenp=removenp, untouchables=untouchables) 
       if(length(alldocs)>2){
         s = which(alldocs == "<doc>")
         fi = findInterval(seq_along(alldocs), s)
@@ -125,75 +201,121 @@ fixcohaperiod = function(period1,
   
   # rdata filename
   if(byyear){
-    subperiod=paste0(gsub( "[^_]*_([0-9]{4}).*","\\1",gsub("[^/]+/(.*)", "\\1", period1[1])),".RData") # gets year
+    subperiod=gsub( "[^_]*_([0-9]{4}).*","\\1",gsub("[^/]+/(.*)", "\\1", period1[1]) ) # gets year
   }
   if(!byyear){
-    subperiod = paste0(ifelse(saveyear, gsub("[^0-9]","", period1), period1),".RData") # year from foldername
+    subperiod = ifelse(saveyear, gsub("[^0-9]","", period1), period1) # year from foldername
   }
-  tryCatch({save(period, file=file.path(FOLDER, "periods", subperiod ))}, error=function(e) e )
-  print(Sys.time())
-  #return(period)   #  parallel, just saves
+  
+  if(!onlyvocab){
+    try(save(period, file=file.path(FOLDER, periodfolder, paste0(subperiod,".RData" ) )))
+    print(Sys.time())
+    return(NULL) #  parallel, just saves into folder
+  }
+  if(onlyvocab){
+    vocab = itoken(period, progressbar = FALSE) %>% 
+      create_vocabulary(ngram = c(ngram_min = 1L, ngram_max = 1L))
+    tmp=vocab$term
+    vocab = vocab$term_count; names(vocab) = tmp 
+    #try(save(vocab, file=file.path(FOLDER, periodfolder, paste0(subperiod,".RData" ) )))
+    return(vocab)
+  }  
 }
 
-coha_parallel = function(theperiods, nfree=0, markS = list(S=F,V=F,A=F,D=F,M=F,P=F), minlen=3, path="", saveyear=T, rmstopwords=T, removenp=T, byyear=F, FOLDER){
-  # byyear: do by year instead of decade; theperiods needs to be list where each
-  # element is a vector of year files, with full paths
-  library(compiler)          
+
+docorpus_parallel = function(theperiods, 
+                             nfree=0, # how many cpu cores to leave unused (increase if RAM issues)
+                             markS = list(N=F,V=F,A=F,D=F,M=F,P=F), 
+                             minlen=3, 
+                             path, 
+                             saveyear=T,    # use folder decade as filename
+                             rmstopwords=T, # remove stopwords?
+                             removenp=F,    # remove proper nouns by removing all Capitalized?
+                             byyear=F,      # do by year instead of decade; theperiods needs to be list where each element is a vector of year files, with full paths
+                             onlyvocab=F, # only collects lexicon frequencies, does not save period files
+                             untouchables=NULL, # optional vector of words to bypass filtering
+                             FOLDER,
+                             periodfolder="cohaperiods",
+                             minc=100,
+                             skipperiods=F # debug
+){
+  require("parallel")
+  require("grr")
+  require("compiler") # pre-compile functions for faster execution in the cluster:       
   setCompilerOptions("suppressAll" = T)
   fixcohaperiod = cmpfun(fixcohaperiod, options=list(optimize=3))
-  coca_csv = cmpfun(coca_csv, options=list(optimize=3))
-  library(parallel)
-  nc = detectCores() - nfree
-  cl = makeCluster(nc)
-  print(paste(Sys.time(), "start"))
-  tryCatch({
-    clusterExport(cl, c("fixcohaperiod", "coca_csv", "markS", "minlen", "path", "saveyear","rmstopwords", "removenp", "byyear", "FOLDER"),envir = environment()) 
-    #clusterExport(cl, "FOLDER")
-    tmp = parLapply(cl, theperiods, fixcohaperiod, 
-                    markS = markS, minlen=minlen, path=path, saveyear=saveyear, rmstopwords=rmstopwords, removenp=removenp, byyear=byyear, FOLDER=FOLDER
-    )
-  }, error=function(e){print(e)},  finally = stopCluster(cl) )
-  print(paste(Sys.time(), "done"))
+  coha_csv = cmpfun(coha_csv, options=list(optimize=3))
+  try(dir.create(file.path(FOLDER, periodfolder) )) # try to create folder in case doesn't exist
+  
+  if(!skipperiods){
+    # prep cluster
+    nc = detectCores() - nfree
+    cl = makeCluster(nc)#, outfile=file.path(FOLDER, periodfolder, "log.txt"))
+    print(paste(Sys.time(), "start"))
+    tryCatch({
+      clusterExport(cl, c("fixcohaperiod", "coha_csv", "markS", "minlen", "path", "saveyear","rmstopwords", "removenp", "byyear", "onlyvocab", "FOLDER", "periodfolder"),envir = environment()) # exports params and compiled functions to cluster
+      clusterEvalQ(cl, c(library(text2vec), library(magrittr), library(fastmatch) ) ) # exports packages to cluster
+      
+      tmp = parLapply(cl, theperiods, fixcohaperiod, 
+                      markS = markS, minlen=minlen, path=path, saveyear=saveyear, rmstopwords=rmstopwords, removenp=removenp,byyear=byyear, onlyvocab=onlyvocab, untouchables=untouchables,
+                      FOLDER=FOLDER,periodfolder=periodfolder
+      )
+    }, error=function(e){print(e)},  finally = stopCluster(cl) )
+    
+    # if(onlyvocab){   # not functional in this version
+      #countmat = fixvocablist(tmp)
+      #countmat = countmat[rowSums(countmat)>1, ] # remove hapaxes (single occurrence in entire corpus)
+      #print(paste(Sys.time(), "corpus files done"))
+      #return(countmat)
+      #return(NULL)
+    #} else {
+    # }
+    #print(paste(Sys.time(), "corpus done, doing counts"))
+  }
+  countmat = dotrends(foldr=periodfolder, mincount=1, nfree=nfree, rm_global_hapaxes=T, 
+                      FOLDER=FOLDER, minc=minc)
+  #print(paste(Sys.time(), "corpus and counts done"))
+  return(countmat)
 }
 
 
-dotrends = function(foldr, mint=2, nfree=0){
-  files = list.files(foldr, full.names = T)  # [1:2]# DEBUGGING
-  print(paste(Sys.time(), "start countmat"))
+
+dotrends = function(foldr, mincount=1, smooth0=F, nfree=0, rm_global_hapaxes=T, FOLDER, minc){
+  files = list.files( file.path(FOLDER, foldr), full.names = T, pattern="RData$")
+  print(paste(Sys.time(), "Start counting words"))
   
   library(parallel)
   nc = detectCores() - nfree
   cl = makeCluster(nc)
-  clusterExport(cl, c("mint", "files"),envir = environment())
+  clusterExport(cl, c( "files", "minc"),envir = environment())
   clusterEvalQ(cl, c(library(text2vec),library(fastmatch)) )
   tryCatch({
-    thecounts = parLapply(cl, files, function(f){
+    freqs = parLapply(cl, files, function(f){
       load(f)
       #period=period[1:2]# DEBUGGING
       it = itoken(period, progressbar = FALSE) # period list from load()
       rm(periods); gc() # clean periods - iterator envir now contains all data
       vocab2 <- create_vocabulary(it, ngram = c(ngram_min = 1L, ngram_max = 1L))
-      vocab2 <- prune_vocabulary(vocab2, term_count_min = mint)
-      docdisp = vocab2$doc_count/attr(vocab2,"document_count"); names(docdisp)=vocab2$term
-      sm=sum(vocab2$term_count)
-      freqs=(vocab2$term_count/sm)*1000000; names(freqs)=vocab2$term
-      return(list(freqs, sm, docdisp))
+      vocab2 <- prune_vocabulary(vocab2, term_count_min = mincount)
+      #docdisp = vocab2$doc_count/attr(vocab2,"document_count"); names(docdisp)=vocab2$term
+      
+      # now doing normalization in the end!
+      # sm=sum(vocab2$term_count)
+      freqs=vocab2$term_count
+      names(freqs)=vocab2$term 
+      return(freqs  )
     })
-    freqs = lapply(thecounts, function(x)   x[[1]])
-    thesums = sapply(thecounts, function(x) x[[2]])
-    docdisp = lapply(thecounts, function(x) x[[3]])
-    rm(thecounts);gc()
+    
     allwords = unique(unlist(lapply(freqs, function(x) names(x) ),use.names = F ) )
+    #print(paste(Sys.time(), "Period counts done"))
     
-    print(paste(Sys.time(), "freqs done"))
-    
-    clusterExport(cl, c("allwords", "freqs", "docdisp"),envir = environment())
+    clusterExport(cl, c("allwords", "freqs"),envir = environment())
     lexorder = parLapply(cl, 1:length(files), function(x){ 
       return(fmatch(allwords, names(freqs[[x]]) ) )
     })
     clusterExport(cl, c("lexorder"),envir = environment())
     
-    print(paste(Sys.time(), "lexorder done, aggregating counts and disps"))
+    print(paste(Sys.time(), "Aggregating counts"))
     
     countmat1 = parSapply(cl, 1:length(files), function(x){
       freqvec = freqs[[x]]
@@ -202,65 +324,140 @@ dotrends = function(foldr, mint=2, nfree=0){
     } )
     rownames(countmat1) = allwords
     
-    print(paste(Sys.time(), "done with count matrix, doing dispersion matrix"))
-    
-    dispmat = parSapply(cl, 1:length(files), function(x){
-      freqvec = docdisp[[x]]
-      tmp = freqvec[lexorder[[x]] ] # if no occurrence, then !NA! dispersion, not 0
-      return(tmp)
-    } )
-    rownames(dispmat) = allwords
-    
   }, error=function(e){print(e)},  finally = stopCluster(cl) )
   
-  countmat=list(countmat=countmat1, thesums=thesums, dispmat=dispmat)
+  
+  
+  ## Fix the counts matrix, normalize, save info ##
+
+  if(rm_global_hapaxes){ # remove useless words that occur just once per entire corpus
+    countmat1 = countmat1[rowSums(countmat1)>1, ]
+  }
+  
+  # save list of words that occur frequently enough to be included in future topic models
+  #lexicon = rownames(countmat1)[apply(countmat1, 1, function(x) any(x>=minc) ) ]
+  
+  # normalize matrix columns to per-million
+  thesums = colSums(countmat1)
+  for(i in 1:ncol(countmat1)){
+    countmat1[,i] =  (countmat1[,i]/thesums[i])*1000000
+  }
+  ones = (1/thesums)*1000000 # vector of (normalized) values that correspond to 1 occurrence 
+  # for smoothing in log() frequency difference calculations
+  
+  countmat=list(countmat=countmat1, thesums=thesums, ones=ones )
   try({ save("countmat", file=file.path(FOLDER, "countmat.RData")) })
-  print(paste(Sys.time(), "done with dotrends"))
+  print(paste(Sys.time(), "Done with counting words."))
   return(countmat)
 }
 
-dofreqdif = function(countmat, smooth, lexicons){
-  #lexicons = getlexicons(countmat[[1]],countmat[[2]], minraw) # 1 comlex for columns, 2 lexicon for dataframes
-  Sys.time()
-  freqdifmat = matrix(nrow=length(lexicons), ncol=ncol(countmat)); rownames(freqdifmat)=lexicons
+
+
+
+fixvocablist = function(freqs,nfree=0, fromfiles=F, foldr){
+  require(grr)
+  require(fastmatch)
+  require(parallel)
+  nc = detectCores() - nfree
+  cl = makeCluster(nc)
+  
+  if(fromfiles){
+    files=list.files(foldr, full.names = T, pattern="RData$")
+    clusterExport(cl, c("files"),envir = environment())
+    clusterEvalQ(cl, c(library(text2vec),library(fastmatch)) )
+    tryCatch({
+      freqs = parLapply(cl, files, function(f){
+        load(f)
+        it = itoken(period, progressbar = FALSE) # period list from load()
+        rm(period) # clean periods - iterator envir now contains all data
+        vocab2 <- create_vocabulary(it, ngram = c(ngram_min = 1L, ngram_max = 1L))
+        #vocab2 <- prune_vocabulary(vocab2, term_count_min = mint)
+        #docdisp = vocab2$doc_count/attr(vocab2,"document_count"); names(docdisp)=vocab2$term
+        #sm=sum(vocab2$term_count)
+        freq=(vocab2$term_count) #/sm)*1000000; 
+        names(freq)=vocab2$term
+        return(freq)
+      })
+    })
+  }
+  wordl=lapply(freqs, function(x) names(x) ) 
+  allwords = unique(.Internal(unlist(wordl, FALSE, FALSE)) )
+  allwords = sort2(allwords) # alphabetical; requires grr
+  rm(wordl)
+  print(paste(Sys.time(), "lexicon done"))
+  
+  tryCatch({
+    clusterEvalQ(cl, c(library(fastmatch)) )
+    clusterExport(cl, c("allwords", "freqs"),envir = environment())
+    
+    lexorder = parLapply(cl, 1:length(freqs), function(x){ 
+      return(fmatch(allwords, names(freqs[[x]]) ) )
+    })
+    clusterExport(cl, c("lexorder"),envir = environment())
+    print(paste(Sys.time(), "lexorder done, aggregating counts"))
+    
+    countmat1 = parSapply(cl, 1:length(freqs), function(x){
+      freqvec = freqs[[x]]
+      tmp = freqvec[lexorder[[x]] ]; tmp[is.na(tmp)] = 0 # if no occurrence, then 0
+      return(tmp)
+    } )
+  }, error=function(e){print(e)},  finally = stopCluster(cl) )
+  rownames(countmat1) = allwords
+  countmat1 = countmat1[rowSums(countmat1)>1, ]
+  tryCatch({stopCluster(cl)}, error=function(e){}) # double check cluster closing
+  return(countmat1)
+}
+
+
+dofreqdif = function(countmat, ones, uselog=T){
+  countmat = round(countmat, 10) # to avoid any chance of floating point errors when looking for 0s
+  freqdifmat = countmat
+  freqdifmat[] = NA
   for(i in 2:ncol(countmat)){
-    fr1 = countmat[lexicons,i-1] +smooth
-    fr2 = countmat[lexicons,i]   +smooth
-    #freqdif1 = (abs(fr1 - fr2))/fr1*100; freqdif1 = ifelse(fr1 > fr2, freqdif1*-1, freqdif1)
-    freqdifmat[,i] = log(fr2/fr1)    #freqdif1
+    fr1 = countmat[,i-1] 
+    fr2 = countmat[,i]   
+    if(uselog){
+      fr1[fr1==0] = ones[i-1]  # smoothing by pm value that equals 1 occurrence in that subcorpus
+      fr2[fr2==0] = ones[i]
+      x = log(fr2/fr1)  
+      # Super important: return changes from 0 to 0 back into zeroes - the smoothing above
+      # makes all zeroes non-zero, which would lead to weird numbers, so this fixes it:
+      x = ifelse( (fr1+fr2)==0, 0, x)
+      #
+      freqdifmat[,i] = x
+    } else {  # raw freq difference
+      freqdifmat[,i] = fr2-fr1
+    }
   }
   gc()
   return(freqdifmat)
-}
-library(compiler)
-dofreqdif = cmpfun(dofreqdif, options=list(optimize=3))
+}; dofreqdif = cmpfun(dofreqdif, options=list(optimize=3))
 
-makeppmi = function(pmat, positive=T){
+
+#### ppmi and advection ####
+
+
+fullppmi = function(pmat, N, colp,rowp, positive=T){
   library(Matrix, quietly = T)
+  # throws error is supplied vectors don't make sense:
+  if(length(colp) != nrow(pmat) | length(rowp) != ncol(pmat) ) { 
+    stop("mismatching norm vector length(s)")
+  } 
+  # note colp~nrow comparison - because the matrix is transposed for efficiency below
+  
   pmat = Matrix::t(pmat)
-  #pmat = (tcmfornews)
-  #set.seed(1)
-  #pmat = matrix(sample(c(0,0,0,0,0,0,1,10),5*10,T), 5,10, byrow=T)
-  #pmat = Matrix::t(Matrix(pmat, sparse=T))
-  
-  tcmrs = Matrix::rowSums(pmat)
-  tcmcs = Matrix::colSums(pmat)
-  N = sum(tcmrs)
-  colp = tcmcs/N
-  rowp = tcmrs/N
-  
   pp = pmat@p+1
   ip = pmat@i+1
   tmpx = rep(0,length(pmat@x))
-  for(i in 1:(length(pmat@p)-1) ){ 
-    #for(i in 1:100 ){ 
+  for(i in 1:(length(pmat@p)-1) ){
+    #for(i in 1:100 ){
     #not0 = which(pmat[, i] > 0)
     ind = pp[i]:(pp[i+1]-1)
     not0 = ip[ind]
     icol = pmat@x[ind]
     #print(icol)
     #tmp = log( (pmat[not0,i]/N) / (rowp[not0] * colp[i] ))
-    tmp = log2( (icol/N) / (rowp[not0] * colp[i] ))
+    tmp = log2( (icol/N) / (rowp[not0] * colp[i] ) )
     tmpx[ind] = tmp
     #print(tmp)
     # tmp = ifelse(tmp < 0, 0, tmp)
@@ -271,97 +468,75 @@ makeppmi = function(pmat, positive=T){
   }
   pmat2 = pmat
   pmat2@x = tmpx
-  pmat2 = Matrix::t(pmat2) 
-  pmat2 = drop0(pmat2,is.Csparse=T) 
+  pmat2 = Matrix::t(pmat2)
+  pmat2 = drop0(pmat2,is.Csparse=T)
   return(pmat2)
-}
+}; fullppmi = cmpfun(fullppmi, options=list(optimize=3))
 
-make_ppmi_tcm = function(nperiod, rdats, minc, gramwin, comlex, wordclassesr, wordclassesc= ".", interpol=c(0), 
-                         simuversion=F, maxperiod=NA,segment_indices=NA, 
-                         ppmi=T, windowweights ){   
-  #  3 for simu only; simuversion is only for compatibility with ac->spok change simulation
-  # NB, period files are up to ~400mb, so concatenating will eat RAM fast...
-  library(text2vec)
-  library(Matrix)
-  if(!simuversion){
-    periods=list()
-    for(ni in (nperiod+interpol) ){ # 0 is current, -1 previous, 1 future, etc
-      if(ni > 0 & !(ni > length(rdats)) ){ # avoid indices beyond list
-        load(rdats[ni]) # load period
-        periods = append(periods, period)
-        #print(c(length(period), length(periods)) ) # debug
-      }
-    }
-    rm(period) # clean lastly loaded text data object
+
+
+
+doppmimat = function(years,winsize=5,minc = 100, ppmi=T, foldr){
+  require(text2vec)
+  require(Matrix)
+  
+  toload = years
+  files=list.files(foldr, full.names = T, pattern = "RData$")
+  plist = list()
+  for(f in toload){
+    load(files[f]) # load period
+    plist = c(plist, period) # could optimize (but need to keep it 1-deep list!)
   }
-  
-  if(simuversion){
-    periods=list()
-    for(ni in (nperiod+interpol) ){ # 0 is current, -1 previous, 1 future, etc
-      if(ni > 0 & !(ni > maxperiod) ){ # avoid indices beyond list
-        period = c(rdats$academic[segment_indices[[1]][[ni]] ], rdats$spoken[segment_indices[[2]][[ni]] ])
-        periods = append(periods, period)
-        #print(c(length(period), length(periods)) ) # debug
-      }
-    }
-    rm(period,rdats);gc()
-  }
-  
-  # do iter,vocab, tcm
-  it = itoken(periods, progressbar = FALSE) # period list from load()
-  rm(periods); gc() # clean periods - iterator envir now contains all data
-  vocab2 <- create_vocabulary(it, ngram = c(ngram_min = 1L, ngram_max = 1L))
-  #docmin = vocab2$vocab$doc_counts/vocab2[["document_count"]]
-  vocab2 <- prune_vocabulary(vocab2, term_count_min = minc, doc_proportion_max=1, doc_proportion_min=0)# 2/vocab2$document_count) # avoid single-doc words
-  # should still exclude single-doc-words? calculate dispersion/burstiness instead
-  
-  vectorizer <- vocab_vectorizer(vocab2)
-  if(windowweights == "uniform"){
-    tcm = create_tcm(it, vectorizer, skip_grams_window = gramwin, 
-                     weights = 1 / rep(1,gramwin) )
-  } else {
-    tcm = create_tcm(it, vectorizer, skip_grams_window = gramwin,
-                     weights =  1 / seq_len(gramwin))
-    
-  }
-  rm(it, vocab2, vectorizer);gc() # free some memory
-  tcm = tcm + Matrix::t(triu(tcm))  # originally triangular, copy to make it work
-  # NB: vocab_vectorizer and create_tcm are changed in text2vec 0.5.0, 
-  # now params in latter; also has symmetric window and weights options!
-  
-  Matrix::diag(tcm) = 0
-  
-  # keep only persistent lexicon as context (and pos if set)
-  if(!is.na(comlex[1])){
-    if(nchar(wordclassesc) > 1){ comlex = grep(wordclassesc, comlex, value=T)} # if filtered comlex
-    # NB: currently filtering wordclass in columns works only with comlex, tweak ifelse if needed
-    if(nchar(wordclassesr)>1) {
-      tcm = tcm[grep(wordclassesr,rownames(tcm)), comlex ]  }
-    else { tcm = tcm[, comlex ] }
-  } else { 
-    # if NO COMLEX
-    if(nchar(wordclassesr)>1) {
-      tcm = tcm[grep(wordclassesr,rownames(tcm)),  ]  
-    }   # NO else, use full tcm, no filtering for wordclass or comlex
-    
-  }  
-  gc()
+  rm(period) # remove last
+  it = itoken(plist, progressbar = FALSE); rm(plist)
+  voc0 = prune_vocabulary(create_vocabulary(it), term_count_min = minc)
+  vectorizer = vocab_vectorizer(voc0)
+  tcm = create_tcm(it, vectorizer, skip_grams_window = winsize)
+  tcm = tcm + Matrix::t(Matrix::triu(tcm)) ; Matrix::diag(tcm) = 0 
   if(ppmi){
-    tcm = makeppmi(tcm)               # run ppmi weigthing
+    normvoc = voc0$term_count/sum(voc0$term_count)
+    N=sum(tcm@x)
+    rm(it,vectorizer, voc0) # free some memory
+    ptcm = fullppmi(pmat=tcm, N=N, colp=normvoc,rowp=normvoc)
+    return(ptcm)
+  } else {
+    return(tcm)
   }
-  #print(paste(Sys.time(), "tcm done")) # in cluster, nowhere to print
-  return(tcm)
 }
-
-
 
 dorelevants = function(ppmimat,relevancy_threshold){
   library(grr)
   relevants = list()
   print(paste(Sys.time(), "do relevance vectors"))
+  #excludeself = match(rnames, colnames(ppmimat))  # might not have match in comlex ->NA
+  #excludeself[is.na(excludeself)] = ncol(ppmimat)+100  # idea: those with no match get index > length of vector, so they can't be -indexed but won't be NA when -indexed, no need for ifelse
+  
+  # if(paral){
+  # library(parallel)
+  # nc = detectCores() - nfree
+  # cl = makeCluster(nc)
+  # clusterEvalQ(cl, library(Matrix)) 
+  # clusterExport(cl, c("ppmimat","relevancy_threshold"),envir = environment()) 
+  # print(paste(Sys.time(), "export ready, start"))
+  # tryCatch({
+  #   relevants = parLapply(cl, 1:nrow(ppmimat), 
+  #       function(x){
+  #         #y=sort(ppmimat[x,-(union(which(ppmimat[x,]==0), excludeself[x]))], decreasing=T)
+  #         # self-ppmi is always zero due to how text2vec handles the tcm
+  #         y=sort(ppmimat[x,-which(ppmimat[x,]==0)], decreasing=T) 
+  #         return(names(y[1:min(length(y),relevancy_threshold)])) 
+  #         }
+  #       )
+  # }, error=function(e){print(e)}, finally = stopCluster(cl))
+  # }
+  # 
+  # if(!paral){
   relevants = list(); length(relevants) = nrow(ppmimat)
+  names(relevants) = rownames(ppmimat)
   ppmimat = Matrix::as.matrix(ppmimat)
   for(x in 1:nrow(ppmimat)){
+    #y=sort(ppmimat[x,-(union(which(ppmimat[x,]==0), excludeself[x]))], decreasing=T)
+    # self-ppmi is zero, fixed in ppmimat (old: thought text2vec handles itself)
     tmp = ppmimat[x,-which(ppmimat[x,]==0)]
     y=tmp[rev(order2(tmp))] # sort2 is decreasing=F BUT MESSES UP NAMES, USE order2
     y=y[1:min(length(y),relevancy_threshold)] # but this need top ones, so rev
@@ -369,151 +544,117 @@ dorelevants = function(ppmimat,relevancy_threshold){
   }
   print(paste(Sys.time(),"relevance vectors done"))
   return(relevants)
-}
-dorelevants = cmpfun(dorelevants, options=list(optimize=3))
+}; dorelevants = cmpfun(dorelevants, options=list(optimize=3))
 
-aggregaterelevants = function(foldr, pattern = NULL){
-  # aggregate relevants, 20-30mb per period
-  allrelevants = list()
-  for(x in list.files(foldr, full.names = T, pattern=pattern)){
-    load(x)
-    allrelevants[[gsub("[^0-9]","",x) ]] = relevants 
+
+doadvection = function(relevants, difvec, threshold){ 
+  words = names(relevants)
+  adv = rep(NA, length(words)); names(adv)=words
+  #diffs = difvec[words]
+  # advection from current values of present relevants
+  for(i in 1:length(relevants)){ 
+    nrelevants = 1:(min(threshold, length(relevants[[i]])))
+    adv[i] = weighted.mean(difvec[ names(relevants[[i]][nrelevants] ) ],
+                           w = relevants[[ i ]][nrelevants] , na.rm = T) 
   }
-  gc()
-  return(allrelevants)
+  return(adv)
 }
 
-# tcm+ppmi calculations
-perioddatas = function(rdats = list.files(file.path(FOLDER,"periods"), full.names = T), comlex, minc, tcmwindow, windowweights="weighted", relevancy_threshold, nfree=0,wordclassesr="", tcmfolder=file.path(FOLDER,"periodtcm/"),relefolder=file.path(FOLDER,"periodrelevants/"), interpol=0, yearnames=seq(1810,2000,10)){
-  library(parallel)
-  nc = detectCores() - nfree
-  print(c(paste(Sys.time(), "start tcm phase")))
+
+do_advections = function(winsize, minc, ppmi=T, relevancy_threshold, smoothing=c(0), freqdifmat, foldr, pos=NULL){
+  advs = vector("list", ncol(freqdifmat))
+  for(i in 2:ncol(freqdifmat)){
+    gc() # force memory management
+    ii = i+smoothing  # adding previous period to list if smoothing
+    ppmimat = doppmimat(years=ii, winsize=winsize,minc = minc, ppmi=ppmi,
+                         foldr=foldr)
+    
+    if(!is.null(pos)){
+      ppmimat = ppmimat[grep(pos, rownames(ppmimat)), , drop=F]
+    }
+    
+    relevants = dorelevants(ppmimat, relevancy_threshold) 
+    advs[[i]] = doadvection(relevants, difvec=freqdifmat[,i], threshold=relevancy_threshold) # both same threshold in this version
+  }
+  rm(ppmimat, relevants)
+  allwords = unique(unlist(lapply(advs, function(x) names(x) ),use.names = F ) )
   
-  # TCMs
-  if(length(rdats)>0){
-    cl = makeCluster(nc)
-    clusterExport(cl, c("rdats","comlex", "minc", "tcmwindow","wordclassesr", "interpol", "yearnames", "tcmfolder", "windowweights"),envir = environment())  # from local
-    clusterExport(cl, c("make_ppmi_tcm", "makeppmi")) # from global
-    clusterEvalQ(cl, c(library(fastmatch), library(text2vec), library(grr), library(Matrix)))
-    
-    tryCatch({
-      parLapply(cl, 1:length(rdats), function(x){
-        # load(x) # load period data -> in function instead; send just period index
-        # do and save tcm
-        # NB: assumes ordered period files!
-        tcm = make_ppmi_tcm(nperiod=x,rdats=rdats, comlex=comlex, minc=minc, gramwin = tcmwindow, wordclassesr=wordclassesr, wordclassesc="", interpol=interpol, windowweights=windowweights)
-        save(tcm, file=file.path(tcmfolder, paste0(yearnames[x],".RData" )))
-        rm(period);gc() # remove period data
-      }
-      )
-    }, error=function(e){print(e)}, finally = stopCluster(cl))  
-    gc()
+  advmat = matrix(NA, nrow=length(allwords), ncol=ncol(freqdifmat), dimnames=list(allwords, NULL))
+  for(i in 2:ncol(freqdifmat)){
+    advmat[,i] = advs[[i]][allwords]
+  } 
+  return(advmat)
+}
+
+
+#### New words ####
+
+do_newwords_relevants = function(winsize, minc, ppmi=T, relevancy_threshold, freqdifmat, foldr, pos="^N:", targets=17:20){
+  advs = vector("list", ncol(freqdifmat))
+
+  ppmimat = doppmimat(years=targets, winsize=winsize, minc = minc, ppmi=ppmi, foldr=foldr)
+  if(!is.null(pos)){
+      ppmimat = ppmimat[grep(pos, rownames(ppmimat)), , drop=F]
   }
-  print(c(paste(Sys.time(), "TCMs done")))
+  relevants = dorelevants(ppmimat, relevancy_threshold) 
+  return(relevants)
+}
+
+do_newadvections = function(countmat, newrels, freqdifmat1, xbefore=10){
+  library(Rmisc)
+  cm = round(countmat[[1]],10)
+  freqdifmat1[freqdifmat1==0] = NA  # this avoids deflating the historical topic scores
+  # (some of the topic words are at zero freq in the past, so their "change" would be 0)
+  smat = cm[unique(names(newrels)),]
+  entry=numeric(); xnew=character()
+  for(i in 17:20){
+    x1=rownames(smat)[apply(smat,1, function(x) x[i]>0 & all(x[1:(i-1)]==0) )]
+    xnew = c(xnew, x1 )
+    entry = c(entry, rep(i, length(x1)))
+  }
+  names(entry) = xnew
+  nrels=newrels[xnew]
+  newsmat = matrix(NA, ncol=20, nrow=length(xnew), dimnames=list(xnew,1:20))
+  for(i in 2:20){
+    newsmat[,i] = doadvection(nrels, freqdifmat1[,i], threshold=75)
+  }
+  namat = newsmat; namat[] = NA
+  for(i in 1:length(xnew)){
+    xrange =  (entry[i]-xbefore):(entry[i]-1)
+    namat[i,xrange] = colSums(cm[names(nrels[xnew[i]][[1]]), xrange] > 0)
+  }
   
-  # get relevance sets
-  if(length(tcmfolder)>0){
-    tcmdats = list.files(tcmfolder, full.names = T)
-    cl = makeCluster(nc)
-    clusterEvalQ(cl,  c(library(grr), library(Matrix)))
-    clusterExport(cl, c("dorelevants"))
-    clusterExport(cl, c("relefolder","relevancy_threshold"),envir = environment())  # from local
-    tryCatch({
-      parLapply(cl, tcmdats, function(x){
-        load(x)  # loads tcm
-        relevants = dorelevants(tcm, relevancy_threshold=relevancy_threshold)
-        names(relevants) = rownames(tcm)
-        save(relevants, file=file.path(relefolder, paste0(gsub("[^0-9]","",x),".RData" )))
-        rm(tcm);gc()
-      })
-    }, error=function(e){print(e)}, finally = stopCluster(cl)) 
-    gc()
-  print(c(paste(Sys.time(), "relevance vectors done")))
+  cilist = vector("list", length(xnew));names(cilist)=xnew
+  for(i in 1:length(xnew)){
+    xrange =  (entry[i]-xbefore):(entry[i]-1)
+    cilist[[i]] = CI(newsmat[i, xrange])
   }
+  
+  return(list(newsmat=newsmat, namat=namat, entry=entry, cilist=cilist))
+}
+
+
+summarize_news = function(newslist){
+  n=nrow(newslist$newsmat)
+  newsmat=data.frame(tomean=rep(NA,n), val=rep(NA,n),row.names = rownames(newslist$newsmat), stringsAsFactors = F)
+  for(i in 1:n){
+    x = newslist$newsmat[i, newslist$entry[i] ] 
+    newsmat$tomean[i] = x - newslist$cilist[[i]]["mean"]
+    val="mid"
+    if( x > newslist$cilist[[i]][1]) val = "above"
+    if( x < newslist$cilist[[i]][3]) val = "below"
+    newsmat$val[i] = val
+  }
+  return(newsmat[order(newsmat$tomean),])
 }
 
 
 
 
 
-# generates matrix for advection
-dotopicsloop = function(periods, difmat, countmat=NULL, wordclassesr, threshold,
-                        estimate0=F, estimate2=F){ 
-  if(length(wordclassesr) == 1){
-    words = grep(wordclassesr, rownames(difmat), value = T)  # by regex; eg do only noun words
-  } else {
-    words = wordclassesr
-  } # if len>1 then assume wordlist, use that instead
-  
-  inertiamat=matrix(NA, nrow=length(words),ncol=ncol(difmat)); rownames(inertiamat) = words
-  #inertiamat2 = inertiamat
-  estimat = inertiamat
-  for(x in 2:length(periods)){
-    #print(x)
-    relevants=periods[[x]]
-    inperiod = which(words %in% names(relevants))
-    
-    # determine if estimating based on previous or future relevant vectors
-    # disable if using interpolation at the TCM level
-    canestimate0=NULL
-    if(estimate0){
-      canestimate0 = setdiff(which(words %in% names(periods[[x-1]])), inperiod)
-    }
-    canestimate2=NULL
-    if(estimate2){
-      if(x < length(periods)){  # if not last period
-        canestimate2 = setdiff(which(words %in% names(periods[[x+1]])),
-                               union(canestimate0, inperiod))
-      }
-    }
-    #estimat[inperiod,x] = F; estimat[union(canestimate0, canestimate2), x] = T # others NA
-    
-    # DO ADVECTION
-    # advection from current values of present relevants
-    for(i in inperiod){ 
-      nrelevants = 1:(min(threshold, length(relevants[[words[i] ]])))
-      inertiamat[i,x] = weighted.mean(difmat   [ names(relevants[[words[i] ]][nrelevants] ), x],
-                                      w = relevants[[ words[i] ]][nrelevants] , na.rm = T) 
-      #inertiamat2[i,x] = weighted.mean(countmat[ names(relevants[[words[i] ]] ), x],
-      #                                w = relevants[[ words[i] ]], na.rm = T) 
-    }
-    
-    # interpolate if missing:
-    # advection from current values of relevants from t-1:
-    if(length(canestimate0)>0){
-      relevants=periods[[x-1]]
-      for(i in canestimate0){ 
-        nrelevants = 1:(min(threshold, length(relevants[[words[i] ]])))
-        inertiamat[i,x] = weighted.mean(difmat   [ names(relevants[[words[i] ]][nrelevants] ), x],
-                                        w = relevants[[ words[i] ]][nrelevants] , na.rm = T)
-        # inertiamat2[i,x] = weighted.mean(countmat[ names(relevants[[words[i] ]]), x],
-        #                                 w = relevants[[ words[i] ]], na.rm = T) 
-      }
-    }
-    # advection from current values of relevants from t+1:
-    if(length(canestimate2)>0){ # does not go into if last period (length null)
-      relevants=periods[[x+1]]
-      for(i in canestimate2){
-        nrelevants = 1:(min(threshold, length(relevants[[words[i] ]])))
-        inertiamat[i,x] = weighted.mean(difmat[ names(relevants[[words[i] ]][nrelevants] ), x],
-                                        w = relevants[[ words[i] ]][nrelevants], na.rm = T)
-        # inertiamat2[i,x] = weighted.mean(countmat[ names(relevants[[words[i] ]]), x],
-        #                              w = relevants[[ words[i] ]], na.rm = T) 
-      }
-    }
-    rm(relevants);gc()
-  }
-  #attr(inertiamat, "estimat") = estimat
-  return( list( inertiamat=inertiamat, estimat=estimat))
-}
-library(compiler)
-dotopicsloop = cmpfun(dotopicsloop, options=list(optimize=3))
 
+#### LDA version ####
 
-
-
-
-#### advection via LDA 
 
 advectionLDA = function(slex, topic_vocab_distr, word_freq_change_per_topic, words_distr_across_topics){
   library(Matrix)
@@ -526,7 +667,6 @@ advectionLDA = function(slex, topic_vocab_distr, word_freq_change_per_topic, wor
   word_freq_change_per_topic = Matrix(word_freq_change_per_topic, sparse=T)
   
   for(i in 1: length(slex)){
-    # need to redo topic change every time to exclude word...
     # topic_freq_change = numeric()
     # for(t in 1:nrow(topic_vocab_distr)){
     #   topic_freq_change[t] = sum(topic_vocab_distr[t, -ix] * word_freq_change_per_topic[t,-ix] )
@@ -545,7 +685,7 @@ advectionLDA = cmpfun(advectionLDA, options=list(optimize=3))
 
 doLDAperiod = function(nperiod, rdats, interpol=c(0), 
                        topicsperword=25,topics=500, minc,
-                       a=0.1, b=0.1,n_iter=5000, word_freq_change){
+                       a=0.1, b=0.1,n_iter=5000, word_freq_change, pos){
   if(length(interpol)==1 & interpol[1] != 0 ){stop("interpol value not 0 and not length>1")} # sanity check
   
   library(text2vec)
@@ -562,7 +702,6 @@ doLDAperiod = function(nperiod, rdats, interpol=c(0),
   it = itoken(periods, progressbar = FALSE)
   rm(periods);gc() # it environment has data now
   v = create_vocabulary(it) 
-  
   v= prune_vocabulary(v, term_count_min = minc)
   
   # importantly: if flexible number of topics, dependent on number of unique words in the model (above 100 threshold), nwords/25 by default
@@ -580,11 +719,14 @@ doLDAperiod = function(nperiod, rdats, interpol=c(0),
   lda_model = LatentDirichletAllocation$new(n_topics = n,
                                             topic_word_prior=a, doc_topic_prior=b)
   doc_topic_distr = lda_model$fit_transform(dtm, n_iter=n_iter, check_convergence_every_n = 50)
+  rm(dtm); gc() # cleanup
+  
+  # word_freq_change = freqdif
   
   # words_dist_across_topics  # for each word, how often it appears in topic 1, topic 2, topic 3 (normalised counts)
   words_distr_across_topics = t(normalize(t(lda_model$components), 'l1')) # [topics, words]
   lex = colnames(words_distr_across_topics)
-  
+  # for each topic, how often word 1, word 2 etc appears in it (technically/ideally this is phi in the LDA notation, where it will be smoothed by the beta parameter; you may be using normalised counts from your topic-word matrix representing the zs (ignoring documents))
   topic_vocab_distr  = normalize(lda_model$components,'l1')   # [topics, words]
   
   # Then, for each word: 
@@ -593,108 +735,162 @@ doLDAperiod = function(nperiod, rdats, interpol=c(0),
     word_freq_change_per_topic[,i] = words_distr_across_topics[,i] * word_freq_change[i]
   }
   
-  slex = grep("^S:", lex, value=T)
+  if(!is.null(pos)){
+    slex = grep(pos, lex, value=T) 
+  } else { slex = lex}
+  
   adv = advectionLDA(slex, topic_vocab_distr, word_freq_change_per_topic, words_distr_across_topics)
   
-  dispersion_tops = mean(apply(words_distr_across_topics[,slex], 2, sd),na.rm=T) # do dispersion (standard dev across topics) while at it  -> remove mean if not for debug
+  #  if(length(interpol)==1){
+  #dispersion_tops = mean(apply(words_distr_across_topics[,slex], 2, sd),na.rm=T) # do dispersion (standard dev across topics) while at it  -> remove mean if not for debug
+  # } else { dispersion_tops = NA}
   
-  #return(list(advection=adv, dispersion_tops=dispersion_tops)) # dispersion currently for debug
+  return(adv) 
   #return(list(advection=adv, dispersion_docs=dispersion_docs,dispersion_tops=dispersion_tops ))
-  return(adv)
 }
 
-newadvections = function(countmat, newsrelevants, freqdifmat1, relevancy_threshold, xbefore=10){
-  library(Rmisc)
-  smat = countmat[[1]][unique(names(newsrelevants[[1]])),]
-  newslist = list();entry=character(); nalist=list()
-  for(i in 17:20){
-    xnew = rownames(smat)[apply(smat,1, function(x) x[i]>0 & all(x[1:(i-1)]==0) )]
-    #ai = sapply(xnew, function(x) which(!is.na(advection1$inertiamat[x,1:min(i+3, 20)]))[1])
-    ai=xnew
-    for(x in 1:length(ai)){
-      if(!is.na(ai[x])){
-        #rel=allrelevants1[[ai[x]]][[xnew[x]]][1:75]
-        rel=newsrelevants[[1]][[xnew[x]]][1:relevancy_threshold] # relevants for the advection
-        xa = numeric()
-        notna=numeric()
-        jj=1
-        for(j in (i-xbefore):i){
-          # set changes to NA if 0 frequency:
-          freqdifvec = freqdifmat1[names(rel),j]
-          freqdifvec[which(countmat[[1]][names(rel),j]==0)] = NA
-          
-          xa[jj] = weighted.mean(freqdifvec, rel, na.rm=T )  # does advection
-          notna[[jj]] = length(which(!is.na(freqdifvec)))
-          jj=jj+1
-        }
-        #newslist[[paste(xnew[x],i,sep="_") ]] = xa
-        newslist[[xnew[x] ]] = xa
-        #entry[xnew[x] ] = i
-        #nalist[[ xnew[x] ]] = notna
+
+
+ldatester = function(foldr, 
+                     smooth=c(-1, 0), topics=500, minc=100, 
+                     freqdif=freqdifmat, 
+                     nfree=1, periodsx = 2:20, pos=NULL
+){
+  rdats = rdats = list.files(foldr,  full.names = T, pattern = "RData$")
+  
+  library(parallel)
+  nc = detectCores()-nfree
+  cl = makeCluster(nc)
+  print(paste(Sys.time(), "start"))
+  tryCatch({
+    clusterExport(cl, c("doLDAperiod", "advectionLDA"))  # global
+    clusterExport(cl, c("smooth", "freqdif", "rdats", "topics", "minc", "pos"), envir = environment())  # local
+    clusterEvalQ(cl, c(library(Matrix), library(text2vec) )) 
+    ldalist = parLapply(cl, periodsx, function(x) {
+      ldaresults = doLDAperiod(nperiod=x, rdats, interpol=smooth, 
+                             topicsperword=F,topics=topics, minc=minc,
+                             a=0.1, b=0.1,n_iter=5000, word_freq_change=freqdif[,x], pos=pos )
+      return(ldaresults)
+      } )
+  }, error=function(e){print(e)},  finally = stopCluster(cl) )
+  
+  allwords = unique(unlist(lapply(ldalist, function(x) names(x) ),use.names = F ) )
+  
+  ldamat = matrix(NA, nrow=length(allwords), ncol=ncol(freqdif), dimnames=list(allwords, NULL))
+  for(i in 2:ncol(freqdif)){
+    ldamat[,i] = ldalist[[i-1]][allwords]   # list length is -1, as starts with 2
+  } 
+  
+  print(paste(Sys.time(), "LDA version done"))
+  return(ldamat) 
+}
+
+
+#### summary functions ####
+
+do_r2 = function(advs, fm){
+  library(beeswarm)
+  corrs=vector("list", length(advs))
+  for(li in seq_along(advs) ){
+    xcorrs=rep(NA,ncol(advs[[li]] ))
+    fmx = fm[rownames(advs[[li]]), ]
+    for(cl in 2:ncol(advs[[li]])){
+      xcorrs[cl] = cor(advs[[li]][,cl], fmx[, cl], use="pairw")^2
+    }
+    #beeswarm(xcorrs, ylim=c(0,1))
+    corrs[[li]] = xcorrs
+  }
+  return(corrs)
+}
+
+do_adv_summary = function(advs){
+  nu=c(); nn=c()
+  for(li in seq_along(advs) ){
+    nu[li]=nrow(advs[[li]][apply(advs[[li]], 1, function(x) any(!is.na(x))) ,])
+    nn[li]=length(which(!is.na(c(advs[[li]]))))
+  }
+  return(c(nu,nn) )
+}
+
+
+do_corpus_ks=function(COHAPATH){
+  # counts number of lines (~words) in each genre in each decade
+  # and calculates successive Kullback-Leibler divergences
+  library(entropy)
+  gs = c("^fic", "^mag", "^news", "^nf")
+  periods = list.files(COHAPATH)
+  res = matrix(0, nrow=length(periods), ncol=length(gs), dimnames=list(periods,gs))
+  for(i in seq_along(periods)){
+    fs = list.files(file.path(COHAPATH, periods[i]))
+    for(g in gs){
+      ng = c()
+      gfiles = grep(g, fs, value=T)
+      for(gf in gfiles){
+        ng[gf] = length(readLines(file.path(COHAPATH, periods[i], gf),warn = F))
       }
+      res[i, g] = sum(ng)
     }
   }
-  return(newslist)
+  ks = c()
+  res2 = ifelse(res==0, res+1, res)
+  for(i in 2:nrow(res2)){
+    x1 = res2[i-1,]/sum(res2[i-1,])
+    x2 = res2[i,]/sum(res2[i,])
+    ks[i] = KL.plugin(x1,x2)
+  }
+  return(ks)
 }
 
-plotword = function(x, freqdif = freqdifmat, countm = countmat[[1]], adv=advection1$inertiamat, sem=F, ylims=c(1,100), xlims=c(1,20), uselims=F, decades=seq(1810,2000,10), ab=NA,yround=100, returnit=F, red=T ){
-  x1 = (which(countm[x,] > 0)[1])
-  #   points(x1, countm[x,x1])           # debug
-  pseq = (x1+1):ncol(countm)
-  nas = rep(0, x1-1)
-  logfreq0 = (c(nas, log(countm[x,x1]), freqdif[x,pseq]))
-  logfreq = cumsum(logfreq0)
-  logfreq[0:length(nas)]=NA
+newwordplots = function(w, newslist, newrels, ylab=F, nice=F){
+  library(wordcloud)
+  m=0.7#-(0.8/4)
+  par( fg="gray40")
+  if(ylab) par( mar=c(2,2.5,0.3,0.4), cex.axis=m, cex.lab=m, mgp=c(3, .3, 0))
+  if(!ylab) par( mar=c(2,1.5,0.3,0.4), cex.axis=m, cex.lab=m, mgp=c(3, .3, 0))
+  cols=brewer.pal(11,"Spectral")
+  pcols= c("gray", colorRampPalette(cols)(19))
+  
+  plot(newslist$newsmat[w,], type="n",
+       ylab="", xlab="", yaxt="n",xaxt="n", xlim=c(14,20),ylim=c(-0.1,0.57))
+  grid(lty=1, lwd=1,col="gray95")
+  ci=newslist$cilist[[w]]
+  rect(10, ci[3],newslist$entry[w]-0.3, ci[1], border = NA, col="gray91")   #col = cols[7])
+  lines(x=c(10,newslist$entry[w]-0.3), y=rep(ci[2],2), lwd=2, col = "gray70"  )
+  points(newslist$entry[w],newslist$newsmat[w, newslist$entry[w]], col=pcols[newslist$entry[w]], pch=16,lwd=1, cex=3)
+  lines(newslist$newsmat[w,], cex=1, pch=16, lwd=0.9, lty=3,type="b",
+        col="gray35" ) #"black", )
   
   
-  x2 = which(!is.na(adv[x,]) )[1]
-  #   points(x2, countm[x,x2])           # debug
-  nas = rep(0, x2-1)
-  pseq = (x2+1):ncol(countm)
-  #logadv0 = c(nas, logfreq[x2], adv[x,pseq])
-  logadv0 = c(nas, log(mean(countm[x,], na.rm=T)), adv[x,pseq])
-  logadv = logadv0
-  logadv[is.na(logadv)]=0
-  logadv = cumsum(logadv)               
-  logadv[0:length(nas)]=NA 
-  logadv[is.na(adv[x,])] = NA
+  axis(side = 2, tck=-0.008,  las=2)
+  # axis(side = 1, 10:20,labels=rep("",11),   tck=-0.008)
+  axis(side = 1, seq(10,20,1),labels=paste0(seq(1900,2000,10),"s"),   tck=-0.008)
+  if(ylab) mtext("advection (log topic change)",2, outer = F, line=1.6,cex=m, adj=0.1 , col="black")
   
-  fa=c(nas, logfreq[x2], logfreq0[pseq] - logadv0[pseq])
-  fa[is.na(fa)]=0 
+  text(14, 0.56, gsub("N:","", w), cex=1.2, font=2, adj=c(0,1),col="black")
+  lines(x=c(13,13.9), y=rep(0,2), col="black")
+  lines(x=c(20.1,21), y=rep(0,2), col="black")
   
-  cfa = cumsum(fa)
-  cfa[0:length(nas)]=NA
-  cfa[is.na(logadv)]=NA
-  
-  if(!uselims){
-    xlims=c(1,length(logfreq))
-    mx=max(exp(c( logfreq,logadv,cfa )), na.rm=T)
-    ylims=c(0, ceiling(mx/yround)*yround )
+  #n=75
+  # do.call(rgb,as.list(c(col2rgb(cols[9])/255)+0.2))
+  # do.call(rgb,as.list(c(col2rgb(cols[8])/255)-0.3))
+  if(nice){
+    par( mar=c(0,0,0,0))
+    cols2 = colorRampPalette(c("white", "gray25"))(11)[cut(c(4,newrels[[w]]),11,include.lowest = T)][-1]
+    wordcloud(gsub("N:|^0.*","", unique(names(newrels[[w]]))), freq = newrels[[w]], min.freq = 1,scale = c(1.5,0.001), random.order = F,ordered.colors = T,  col=cols2, fixed.asp = F, rot.per = 0 )
+  } else {
+    
+    p=par()$mar; p[1]=0; par(mar=p)
+    nr = sort(newrels[[w]], decreasing = T)
+    names(nr)=gsub("N:","",names(nr)); nr=names(nr); nr=nr[!grepl("0", nr)]
+    
+    nc=cumsum(nchar(nr)) %>% cut(., seq(0,max(.),  41)); nrs=5
+    plot(NA, type="n", ylim=c(0.5,nrs+0.5),xlim=c(1,7), bty="n", xaxt="n", yaxt="n",ylab="",xlab="")
+    if(ylab) mtext("top topic words",2, outer = F, line=1.6,cex=m, at=0.7, adj=0, col="black" )
+    for(i in 1:nrs){
+      l=which(as.numeric(nc)==i)
+      text(par("usr")[1]+0.1, nrs-(i-1), paste0(paste0(nr[l], collapse=", "), 
+                                                ifelse(i==nrs,", ...", ",")), cex=1, 
+           col=do.call(rgb, as.list(c(0,0,0)+(i/8)) ), adj=c(0,0), font=3)
+    }
   }
-  plot( 0, type="n", ylim=ylims, col="darkgray", ylab="", xlab="", 
-        #ylab="permillion frequency", xlab="decades",
-        main=gsub("^([A-Z]:){1,2}","",x ),xlim=xlims, xaxt="n")
-  axis(1, at = 1:length(logfreq), labels = decades)
-  abline(v=ab, col=rgb(0,0,0,0.2))
-  
-  abline(v=seq(xlims[1],xlims[2], by=5)-3, col=rgb(0,0,0,0.2),lty=3,lwd=1 )# grid
-  abline(h=seq(ylims[1],ylims[2], length.out = 4)[c(2,3)], col=rgb(0,0,0,0.2),lty=3,lwd=1 )# grid
-  
-  logfreq[countm[x,]==0]=NA   
-  points( exp(logadv ), type="o", col=rgb(0,0.6,0,0.1), cex=0.3, lty=1, lwd=6)#rgb(1,0,0,0.5)
-  points( exp(logfreq ), type="o", col=rgb(0,0,0,1), cex=0.5, lty=1)
-  red = ifelse(red==T, rgb(0.7,0,0, 0.7), NA)
-  points( exp(  cfa ), type="o", col=red, lwd=2, lty=3, cex=0.7)
-
-  
-  if(is.na(exp(logfreq)[1]) | exp(logfreq)[1]<ylims[2]*0.6){
-    y = seq(ylims[2]*0.8, ylims[2]*0.9, length.out = 3)
-  }  
-  else y = seq(ylims[2]/100, ylims[2]/10, length.out = 3) 
-  text(1, y, rev(c(" - frequency", " - topic", "... adjusted")), col=rev(c("black", rgb(0,0.6,0,0.6), "darkred")), font=c(1,2,1), cex=0.9, pos=4)
-  
-  if(returnit){
-    return(list(freq=exp(logfreq ), corrected = exp(  cfa )  ))
-  }
-  
 }
