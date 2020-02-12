@@ -1,6 +1,8 @@
 # The topical-cultural advection model
 
-R scripts to calculate the topical-cultural advection values of words in the Corpus of Historical American English (COHA), as described in: _Andres Karjus, Richard A. Blythe, Simon Kirby, Kenny Smith, 2018. Quantifying the dynamics of topical fluctuations in language. arXiv preprint. https://arxiv.org/abs/1806.00699_ (and upcoming in Language Dynamics and Change).
+R scripts to calculate the topical-cultural advection values of words in the Corpus of Historical American English (COHA), as described in:   
+Karjus, A., Blythe, R. A., Kirby, S., & Smith, K. (2020). Quantifying the dynamics of topical fluctuations in language, Language Dynamics and Change, , 1-40. doi: https://doi.org/10.1163/22105832-01001200  
+arXiv preprint: https://arxiv.org/abs/1806.00699
 
 To successfully run these scripts, you will need a distribution of COHA and a number of R packages (listed in the script).
 
